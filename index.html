@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PIXAR Animation Studios — 3D Intro</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    #canvas-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      background: radial-gradient(circle at 50% 48%, #8fb3d2 0%, #587898 52%, #24374a 100%);
+    }
+
+    /* Кинематографические рамки (2.39:1 / 1.85:1) и виньетка */
+    .vignette {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(
+        ellipse at 50% 50%,
+         rgba(0, 0, 0, 0) 50%,
+        rgba(8, 16, 28, 0.45) 85%,
+        rgba(0, 0, 0, 0.82) 100%
+      );
+      z-index: 2;
+    }
+
+    #fade-overlay {
+      position: absolute;
+      inset: 0;
+      background: #000;
+      pointer-events: none;
+      opacity: 1;
+      z-index: 3;
+    }
+
+    /* Начальный экран для разблокировки Web Audio API */
+    #start-prompt {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      background: rgba(12, 22, 34, 0.78);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      color: #fff;
+      padding: 10px 22px;
+      border-radius: 999px;
+      font-size: 14px;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      transition: transform 0.2s ease, background 0.2s ease, opacity 0.3s ease;
+    }
+
+    #start-prompt:hover {
+      background: rgba(25, 45, 68, 0.9);
+      transform: translateX(-50%) scale(1.03);
+    }
+
+    #start-prompt.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Панель управления внизу */
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(10, 18, 28, 0.72);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      padding: 8px 16px;
+      border-radius: 999px;
+      color: #dbe7f3;
+      font-size: 13px;
+      opacity: 0.25;
+      transition: opacity 0.25s ease;
+    }
+
+    #controls:hover {
+      opacity: 1;
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: #fff;
+      padding: 6px 13px;
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    .btn.active {
+      background: rgba(255, 214, 120, 0.28);
+      border-color: rgba(255, 214, 120, 0.65);
+      color: #ffe8a3;
+    }
+
+    #scrubber {
+      width: 180px;
+      accent-color: #ffd571;
+      cursor: pointer;
+    }
+
+    #time-label {
+      font-variant-numeric: tabular-nums;
+      min-width: 42px;
+      text-align: right;
+      color: #9ab3c9;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <div class="vignette"></div>
+    <div id="fade-overlay"></div>
+
+    <button id="start-prompt">
+      <span>🔊</span>
+      <span>Нажмите, чтобы перезапустить со звуком</span>
+    </button>
+
+    <div id="controls">
+      <button class="btn" id="btn-replay">↻ Сначала</button>
+      <button class="btn" id="btn-pause">⏸ Пауза</button>
+      <input type="range" id="scrubber" min="0" max="13.8" step="0.01" value="0" />
+      <span id="time-label">0.0s</span>
+      <button class="btn" id="btn-sound">🔇 Звук выкл</button>
+      <button class="btn" id="btn-cam" title="Переключить свободную 3D-камеру">🎥 3D-обзор</button>
+    </div>
+  </div>
+
+  <!-- Three.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // =========================================================================
+    // 1. WEB AUDIO API: ПРОЦЕДУРНЫЙ СИНТЕЗАТОР ЗВУКОВ PIXAR (LUXO JR.)
+    // =========================================================================
+    class PixarSoundEngine {
+      constructor() {
+        this.ctx = null;
+        this.enabled = false;
+        this.humNodes = null;
+      }
+
+      init() {
+        if (!this.ctx) {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioCtx();
+        }
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+        this.enabled = true;
+        updateSoundButtonUI();
+      }
+
+      toggle() {
+        if (!this.ctx) {
+          this.init();
+          return;
+        }
+        this.enabled = !this.enabled;
+        if (!this.enabled) this.stopBulbHum();
+        updateSoundButtonUI();
+      }
+
+      // Скрип пружин лампы при отталкивании
+      playSpringJump(intensity = 1.0, pitchScale = 1.0) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Металлический свист пружины (два связанных осциллятора)
+        const osc1 = this.ctx.createOscillator();
+        const osc2 = this.ctx.createOscillator();
+        const filter = this.ctx.createBiquadFilter();
+        const gain = this.ctx.createGain();
+
+        osc1.type = 'sawtooth';
+        osc2.type = 'triangle';
+
+        const baseF = 1150 * pitchScale;
+        osc1.frequency.setValueAtTime(baseF, now);
+        osc1.frequency.exponentialRampToValueAtTime(baseF * 2.15, now + 0.08);
+        osc1.frequency.exponentialRampToValueAtTime(baseF * 1.35, now + 0.16);
+
+        osc2.frequency.setValueAtTime(baseF * 1.48, now);
+        osc2.frequency.exponentialRampToValueAtTime(baseF * 2.8, now + 0.09);
+        osc2.frequency.exponentialRampToValueAtTime(baseF * 1.9, now + 0.16);
+
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(2100 * pitchScale, now);
+        filter.Q.value = 6.5;
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.11 * intensity, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.18);
+
+        osc1.connect(filter);
+        osc2.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 0.19);
+        osc2.stop(now + 0.19);
+      }
+
+      // Приземление на пол студии
+      playFloorThud(intensity = 1.0) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(135, now);
+        osc.frequency.exponentialRampToValueAtTime(34, now + 0.12);
+
+        gain.gain.setValueAtTime(0.28 * intensity, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.15);
+
+        // Короткий отзвук пружины при приземлении
+        this.playSpringCreak(0.45 * intensity, 0.85, 0.08);
+      }
+
+      // Прыжок-сплющивание буквы "I" (резиновый боинг + удар + пружина)
+      playSquishBounce(step = 1) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+
+        const startF = 160 + step * 35;
+        osc.frequency.setValueAtTime(startF, now);
+        osc.frequency.exponentialRampToValueAtTime(startF * 0.52, now + 0.07);
+        osc.frequency.exponentialRampToValueAtTime(startF * 1.65, now + 0.19);
+
+        gain.gain.setValueAtTime(0.26, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.23);
+
+        this.playFloorThud(0.85);
+        this.playSpringJump(0.9, 0.92 + step * 0.07);
+      }
+
+      // Финальное вкручивание и расплющивание буквы "I"
+      playFinalFlatten() {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        this.playFloorThud(1.2);
+        // Серия из 3 быстрых скрипов при вкручивании базы
+        for (let i = 0; i < 3; i++) {
+          setTimeout(() => {
+            this.playSpringCreak(0.65, 1.1 + (i % 2) * 0.25, 0.11);
+          }, 90 + i * 120);
+        }
+      }
+
+      // Мягкий скрип шарниров при повороте головы и наклоне
+      playSpringCreak(intensity = 0.6, pitch = 1.0, duration = 0.18) {
+        if (!this.enabled || !this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        const osc = this.ctx.createOscillator();
+        const filter = this.ctx.createBiquadFilter();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(680 * pitch, now);
+        osc.frequency.linearRampToValueAtTime(980 * pitch, now + duration * 0.5);
+        osc.frequency.linearRampToValueAtTime(760 * pitch, now + duration);
+
+        filter.type = 'bandpass';
+        filter.frequency.value = 1600 * pitch;
+        filter.Q.value = 8.0;
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.055 * intensity, now + duration * 0.25);
+        gain.gain.exponentialRampToValueAtTime(0.0008, now + duration);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + duration + 0.02);
+      }
+
+      // Тёплое гудение лампы накаливания в финале, когда она смотрит в камеру
+      startBulbHum() {
+        if (!this.enabled || !this.ctx || this.humNodes) return;
+        const now = this.ctx.currentTime;
+
+        const osc60 = this.ctx.createOscillator();
+        const osc120 = this.ctx.createOscillator();
+        const shimmer = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc60.type = 'sine';
+        osc60.frequency.value = 60;
+
+        osc120.type = 'triangle';
+        osc120.frequency.value = 120;
+
+        shimmer.type = 'sine';
+        shimmer.frequency.value = 2400;
+
+        const g60 = this.ctx.createGain();
+        const g120 = this.ctx.createGain();
+        const gShim = this.ctx.createGain();
+        g60.gain.value = 0.04;
+        g120.gain.value = 0.018;
+        gShim.gain.value = 0.0025;
+
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.linearRampToValueAtTime(0.9, now + 0.7);
+        gain.gain.linearRampToValueAtTime(0.0001, now + 3.1);
+
+        osc60.connect(g60);
+        osc120.connect(g120);
+        shimmer.connect(gShim);
+        g60.connect(gain);
+        g120.connect(gain);
+        gShim.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc60.start(now);
+        osc120.start(now);
+        shimmer.start(now);
+
+        osc60.stop(now + 3.2);
+        osc120.stop(now + 3.2);
+        shimmer.stop(now + 3.2);
+
+        this.humNodes = { osc60, osc120, shimmer, gain };
+        setTimeout(() => { this.humNodes = null; }, 3250);
+      }
+
+      stopBulbHum() {
+        if (this.humNodes) {
+          try {
+            this.humNodes.gain.gain.setValueAtTime(0.0001, this.ctx.currentTime);
+          } catch (e) {}
+          this.humNodes = null;
+        }
+      }
+    }
+
+    const sound = new PixarSoundEngine();
+
+    // =========================================================================
+    // 2. ИНИЦИАЛИЗАЦИЯ СЦЕНЫ THREE.JS, КАМЕРЫ И СТУДИЙНОГО СВЕТА
+    // =========================================================================
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x4f6d8a, 0.025);
+
+    const camera = new THREE.PerspectiveCamera(
+      34,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      100
+    );
+    const DEFAULT_CAM_POS = new THREE.Vector3(0, 1.25, 8.2);
+    const DEFAULT_CAM_TARGET = new THREE.Vector3(0, 0.88, 0);
+    camera.position.copy(DEFAULT_CAM_POS);
+    camera.lookAt(DEFAULT_CAM_TARGET);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    container.appendChild(renderer.domElement);
+
+    // Студийная циклорама (плавный голубовато-серый фон и пол Pixar)
+    function createCycloramaTexture() {
+      const c = document.createElement('canvas');
+      c.width = 1024;
+      c.height = 1024;
+      const ctx = c.getContext('2d');
+
+      const grad = ctx.createRadialGradient(512, 540, 40, 512, 520, 560);
+      grad.addColorStop(0.0, '#9ec0de');
+      grad.addColorStop(0.45, '#7296b8');
+      grad.addColorStop(0.8, '#466482');
+      grad.addColorStop(1.0, '#293d52');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 1024, 1024);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    const studioTex = createCycloramaTexture();
+
+    // Пол студии
+    const floorGeo = new THREE.PlaneGeometry(38, 26);
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: studioTex,
+      roughness: 0.85,
+      metalness: 0.05
+    });
+    const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+    floorMesh.rotation.x = -Math.PI / 2;
+    floorMesh.position.y = 0;
+    floorMesh.receiveShadow = true;
+    scene.add(floorMesh);
+
+    // Задник циклорамы
+    const wallGeo = new THREE.PlaneGeometry(38, 18);
+    const wallMat = new THREE.MeshStandardMaterial({
+      map: studioTex,
+      roughness: 0.9,
+      metalness: 0.02
+    });
+    const wallMesh = new THREE.Mesh(wallGeo, wallMat);
+    wallMesh.position.set(0, 8.5, -5.2);
+    wallMesh.receiveShadow = true;
+    scene.add(wallMesh);
+
+    // Освещение студии
+    const hemiLight = new THREE.HemisphereLight(0xb8dcff, 0x34495e, 0.65);
+    scene.add(hemiLight);
+
+    const keyLight = new THREE.SpotLight(0xfff8eb, 1.35);
+    keyLight.position.set(1.5, 7.5, 6.8);
+    keyLight.angle = Math.PI / 3.2;
+    keyLight.penumbra = 0.75;
+    keyLight.decay = 1.2;
+    keyLight.distance = 28;
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.width = 2048;
+    keyLight.shadow.mapSize.height = 2048;
+    keyLight.shadow.bias = -0.0004;
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0x8ab4dc, 0.45);
+    fillLight.position.set(-6, 4, 4);
+    scene.add(fillLight);
+
+    // =========================================================================
+    // 3. СОЗДАНИЕ 3D-БУКВ "P I X A R" (CHARLEMAGNE BOLD) И ПОДПИСИ
+    // =========================================================================
+    const GLYPH_DATA = {
+      P: {
+        o: [[-0.11,0.11],[0.0,0.035],[0.0,0.0],[-0.44,0.0],[-0.44,0.035],[-0.33,0.11],[-0.33,1.29],[-0.44,1.365],[-0.44,1.4],[-0.22,1.4],[0.0,1.4],[0.06,1.4],[0.126,1.393],[0.19,1.374],[0.25,1.342],[0.303,1.298],[0.347,1.245],[0.382,1.184],[0.406,1.117],[0.418,1.046],[0.418,0.974],[0.406,0.903],[0.382,0.836],[0.347,0.775],[0.303,0.722],[0.25,0.678],[0.19,0.646],[0.126,0.627],[0.06,0.62],[-0.11,0.62]],
+        h: [[[-0.11,0.72],[0.03,0.72],[0.063,0.725],[0.095,0.74],[0.125,0.763],[0.151,0.796],[0.174,0.835],[0.191,0.881],[0.203,0.931],[0.209,0.983],[0.209,1.037],[0.203,1.089],[0.191,1.139],[0.174,1.185],[0.151,1.224],[0.125,1.257],[0.095,1.28],[0.063,1.295],[0.03,1.3],[-0.095,1.3],[-0.11,1.29]]]
+      },
+      I: {
+        o: [[-0.22,0.0],[0.22,0.0],[0.22,0.035],[0.11,0.11],[0.11,1.29],[0.22,1.365],[0.22,1.4],[-0.22,1.4],[-0.22,1.365],[-0.11,1.29],[-0.11,0.11],[-0.22,0.035]],
+        h: []
+      },
+      X: {
+        o: [[0.47,0.11],[0.57,0.035],[0.57,0.0],[0.15,0.0],[0.15,0.035],[0.25,0.11],[-0.017,0.548],[-0.285,0.11],[-0.185,0.035],[-0.185,0.0],[-0.535,0.0],[-0.535,0.035],[-0.435,0.11],[-0.092,0.671],[-0.47,1.29],[-0.57,1.365],[-0.57,1.4],[-0.15,1.4],[-0.15,1.365],[-0.25,1.29],[0.017,0.852],[0.285,1.29],[0.185,1.365],[0.185,1.4],[0.535,1.4],[0.535,1.365],[0.435,1.29],[0.092,0.729]],
+        h: []
+      },
+      A: {
+        o: [[-0.233,0.42],[-0.33,0.11],[-0.23,0.035],[-0.23,0.0],[-0.57,0.0],[-0.57,0.035],[-0.47,0.11],[-0.08,1.29],[-0.18,1.365],[-0.18,1.4],[-0.14,1.4],[-0.14,1.42],[0.06,1.42],[0.067,1.4],[0.14,1.4],[0.14,1.365],[0.091,1.329],[0.51,0.11],[0.61,0.035],[0.61,0.0],[0.19,0.0],[0.19,0.035],[0.29,0.11],[0.205,0.42]],
+        h: [[[0.175,0.53],[0.002,1.168],[-0.198,0.53]]]
+      },
+      R: {
+        o: [[0.45,0.11],[0.56,0.035],[0.56,0.0],[0.24,0.0],[0.24,0.035],[0.29,0.1],[0.021,0.62],[-0.11,0.62],[-0.11,0.11],[0.0,0.035],[0.0,0.0],[-0.44,0.0],[-0.44,0.035],[-0.33,0.11],[-0.33,1.29],[-0.44,1.365],[-0.44,1.4],[-0.22,1.4],[0.0,1.4],[0.06,1.4],[0.126,1.393],[0.19,1.374],[0.25,1.342],[0.303,1.298],[0.347,1.245],[0.382,1.184],[0.406,1.117],[0.418,1.046],[0.418,0.974],[0.406,0.903],[0.382,0.836],[0.347,0.775],[0.303,0.722],[0.25,0.678],[0.202,0.653]],
+        h: [[[0.03,0.72],[0.063,0.725],[0.095,0.74],[0.125,0.763],[0.151,0.796],[0.174,0.835],[0.191,0.881],[0.203,0.931],[0.209,0.983],[0.209,1.037],[0.203,1.089],[0.191,1.139],[0.174,1.185],[0.151,1.224],[0.125,1.257],[0.095,1.28],[0.063,1.295],[0.03,1.3],[-0.095,1.3],[-0.11,1.29],[-0.11,0.72]]]
+      }
+    };
+
+    const letterMat = new THREE.MeshStandardMaterial({
+      color: 0x11161c,
+      roughness: 0.42,
+      metalness: 0.15
+    });
+
+    function buildLetterMesh(char) {
+      const data = GLYPH_DATA[char];
+      const shape = new THREE.Shape();
+      data.o.forEach((pt, idx) => {
+        if (idx === 0) shape.moveTo(pt[0], pt[1]);
+        else shape.lineTo(pt[0], pt[1]);
+      });
+      shape.closePath();
+
+      data.h.forEach(holePts => {
+        const hole = new THREE.Path();
+        holePts.forEach((pt, idx) => {
+          if (idx === 0) hole.moveTo(pt[0], pt[1]);
+          else hole.lineTo(pt[0], pt[1]);
+        });
+        hole.closePath();
+        shape.holes.push(hole);
+      });
+
+      const extrudeSettings = {
+        depth: 0.22,
+        bevelEnabled: true,
+        bevelSegments: 3,
+        steps: 1,
+        bevelSize: 0.015,
+        bevelThickness: 0.018
+      };
+
+      const geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+      // Центрируем по оси Z, но оставляем нижнюю грань строго на Y = 0
+      geo.translate(0, 0, -0.11);
+
+      const mesh = new THREE.Mesh(geo, letterMat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    const letterPositions = {
+      P: -4.4,
+      I: -2.2,
+      X:  0.0,
+      A:  2.2,
+      R:  4.4
+    };
+
+    const letters = {};
+    Object.keys(letterPositions).forEach(ch => {
+      const m = buildLetterMesh(ch);
+      m.position.set(letterPositions[ch], 0, 0);
+      scene.add(m);
+      letters[ch] = m;
+    });
+
+    const LETTER_I_HEIGHT = 1.40;
+
+    // Надпись "A N I M A T I O N   S T U D I O S"
+    function createSubtitleMesh() {
+      const c = document.createElement('canvas');
+      c.width = 2048;
+      c.height = 256;
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, c.width, c.height);
+
+      ctx.fillStyle = '#0d131a';
+      ctx.font = '600 54px "Cinzel", "Trajan Pro", "Times New Roman", serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const text = 'A N I M A T I O N     S T U D I O S';
+      ctx.fillText(text, c.width / 2, c.height / 2);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.anisotropy = 4;
+
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false
+      });
+
+      const geo = new THREE.PlaneGeometry(9.6, 1.2);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(0, 0.015, 1.35);
+      mesh.rotation.x = -Math.PI / 2.35;
+      return mesh;
+    }
+
+    const subtitleMesh = createSubtitleMesh();
+    scene.add(subtitleMesh);
+
+    // =========================================================================
+    // 4. СОЗДАНИЕ 3D-МОДЕЛИ ЛАМПЫ LUXO JR. С ПОЛНОЙ ИЕРАРХИЕЙ ШАРНИРОВ
+    // =========================================================================
+    const L1 = 0.86; // Длина нижнего колена
+    const L2 = 0.86; // Длина верхнего колена
+
+    // Материалы лампы
+    const enamelMat = new THREE.MeshStandardMaterial({
+      color: 0xeaf0f6,
+      roughness: 0.28,
+      metalness: 0.18
+    });
+    const innerShadeMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffe39e,
+      emissiveIntensity: 0.75,
+      roughness: 0.2,
+      side: THREE.BackSide
+    });
+    const darkMetalMat = new THREE.MeshStandardMaterial({
+      color: 0x2c3238,
+      roughness: 0.38,
+      metalness: 0.75
+    });
+    const chromeMat = new THREE.MeshStandardMaterial({
+      color: 0xcfd6de,
+      roughness: 0.18,
+      metalness: 0.9
+    });
+    const cordMat = new THREE.MeshStandardMaterial({
+      color: 0x16191d,
+      roughness: 0.65,
+      metalness: 0.1
+    });
+    const bulbMat = new THREE.MeshBasicMaterial({
+      color: 0xfffbe0
+    });
+
+    // Вспомогательная функция для сборки пружины с витками
+    function createSpringGroup(length) {
+      const g = new THREE.Group();
+      const coreGeo = new THREE.CylinderGeometry(0.018, 0.018, length, 10);
+      const core = new THREE.Mesh(coreGeo, darkMetalMat);
+      core.castShadow = true;
+      g.add(core);
+
+      const coils = 14;
+      const ringGeo = new THREE.TorusGeometry(0.022, 0.0055, 6, 12);
+      for (let i = 0; i < coils; i++) {
+        const ring = new THREE.Mesh(ringGeo, chromeMat);
+        ring.rotation.x = Math.PI / 2;
+        ring.position.y = -length * 0.42 + (i / (coils - 1)) * (length * 0.84);
+        g.add(ring);
+      }
+      return g;
+    }
+
+    // Вспомогательная функция для секции пантографа (штанги + боковые пружины)
+    function buildArmSection(length) {
+      const group = new THREE.Group();
+      const rodGeo = new THREE.CylinderGeometry(0.019, 0.019, length, 12);
+
+      // Передняя и задняя параллельные штанги пантографа
+      [-0.038, 0.038].forEach(zOff => {
+        const rod = new THREE.Mesh(rodGeo, enamelMat);
+        rod.position.set(0, length / 2, zOff);
+        rod.castShadow = true;
+        group.add(rod);
+      });
+
+      // Две внешние боковые пружины натяжения
+      [-0.068, 0.068].forEach(xOff => {
+        const sp = createSpringGroup(length * 0.68);
+        sp.position.set(xOff, length * 0.5, 0);
+        group.add(sp);
+      });
+
+      // Шарнирный узел сверху секции
+      const jointGeo = new THREE.CylinderGeometry(0.048, 0.048, 0.11, 14);
+      jointGeo.rotateZ(Math.PI / 2);
+      const joint = new THREE.Mesh(jointGeo, darkMetalMat);
+      joint.position.set(0, length, 0);
+      joint.castShadow = true;
+      group.add(joint);
+
+      return group;
+    }
+
+    // Текстура блика (Lens Flare) и объёмного луча
+    function createFlareTexture() {
+      const c = document.createElement('canvas');
+      c.width = 512;
+      c.height = 512;
+      const ctx = c.getContext('2d');
+
+      const g = ctx.createRadialGradient(256, 256, 4, 256, 256, 250);
+      g.addColorStop(0.0, 'rgba(255, 253, 240, 1.0)');
+      g.addColorStop(0.18, 'rgba(255, 238, 175, 0.85)');
+      g.addColorStop(0.45, 'rgba(255, 205, 110, 0.28)');
+      g.addColorStop(1.0, 'rgba(255, 190, 80, 0.0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 512, 512);
+
+      // Горизонтальный кинематографический анаморфотный блик
+      const streak = ctx.createLinearGradient(0, 256, 512, 256);
+      streak.addColorStop(0.0, 'rgba(255, 240, 190, 0)');
+      streak.addColorStop(0.5, 'rgba(255, 250, 220, 0.55)');
+      streak.addColorStop(1.0, 'rgba(255, 240, 190, 0)');
+      ctx.fillStyle = streak;
+      ctx.fillRect(0, 246, 512, 20);
+
+      return new THREE.CanvasTexture(c);
+    }
+
+    function createBeamTexture() {
+      const c = document.createElement('canvas');
+      c.width = 256;
+      c.height = 256;
+      const ctx = c.getContext('2d');
+      const g = ctx.createLinearGradient(0, 0, 0, 256);
+      g.addColorStop(0.0, 'rgba(255, 245, 200, 0.0)');
+      g.addColorStop(0.3, 'rgba(255, 242, 185, 0.09)');
+      g.addColorStop(1.0, 'rgba(255, 248, 215, 0.34)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 256, 256);
+      return new THREE.CanvasTexture(c);
+    }
+
+    // Сборка иерархии Luxo Jr.
+    const lampRoot = new THREE.Group();
+    scene.add(lampRoot);
+
+    // Узел наклона базы
+    const baseTiltGroup = new THREE.Group();
+    lampRoot.add(baseTiltGroup);
+
+    // 1. Тяжёлое круглое основание лампы (LatheGeometry для точного профиля Luxo)
+    const basePoints = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.43, 0.0),
+      new THREE.Vector2(0.44, 0.03),
+      new THREE.Vector2(0.41, 0.075),
+      new THREE.Vector2(0.31, 0.095),
+      new THREE.Vector2(0.24, 0.068),
+      new THREE.Vector2(0.11, 0.085),
+      new THREE.Vector2(0.07, 0.14),
+      new THREE.Vector2(0.0, 0.14)
+    ];
+    const baseGeo = new THREE.LatheGeometry(basePoints, 36);
+    const baseMesh = new THREE.Mesh(baseGeo, enamelMat);
+    baseMesh.castShadow = true;
+    baseMesh.receiveShadow = true;
+    baseTiltGroup.add(baseMesh);
+
+    // Шарнирный кронштейн на базе
+    const baseBracket = new THREE.Mesh(
+      new THREE.BoxGeometry(0.11, 0.08, 0.12),
+      darkMetalMat
+    );
+    baseBracket.position.set(0, 0.13, -0.03);
+    baseTiltGroup.add(baseBracket);
+
+    // Провод питания, выходящий сзади из базы
+    const baseCordCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0.04, -0.38),
+      new THREE.Vector3(0, 0.03, -0.58),
+      new THREE.Vector3(0.08, 0.02, -0.78),
+      new THREE.Vector3(-0.04, 0.02, -0.96)
+    ]);
+    const baseCord = new THREE.Mesh(
+      new THREE.TubeGeometry(baseCordCurve, 16, 0.015, 8, false),
+      cordMat
+    );
+    baseTiltGroup.add(baseCord);
+
+    // 2. Нижнее колено
+    const lowerArmPivot = new THREE.Group();
+    lowerArmPivot.position.set(0, 0.14, -0.03);
+    baseTiltGroup.add(lowerArmPivot);
+
+    const lowerArmMesh = buildArmSection(L1);
+    lowerArmPivot.add(lowerArmMesh);
+
+    // 3. Локтевой шарнир и верхнее колено
+    const elbowPivot = new THREE.Group();
+    elbowPivot.position.set(0, L1, 0);
+    lowerArmPivot.add(elbowPivot);
+
+    // Свободная петля провода вокруг локтя (фирменная деталь Luxo Jr.)
+    const elbowCordCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, -0.18, -0.05),
+      new THREE.Vector3(0, 0.0, -0.15),
+      new THREE.Vector3(0, 0.18, -0.05)
+    ]);
+    const elbowCord = new THREE.Mesh(
+      new THREE.TubeGeometry(elbowCordCurve, 14, 0.013, 8, false),
+      cordMat
+    );
+    elbowPivot.add(elbowCord);
+
+    const upperArmMesh = buildArmSection(L2);
+    elbowPivot.add(upperArmMesh);
+
+    // 4. Компенсатор наклона шеи и шарнир головы
+    const neckLeveler = new THREE.Group();
+    neckLeveler.position.set(0, L2, 0);
+    elbowPivot.add(neckLeveler);
+
+    const neckPivot = new THREE.Group();
+    neckPivot.rotation.order = 'YXZ';
+    neckLeveler.add(neckPivot);
+
+    // Кронштейн крепления плафона
+    const neckBracket = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.032, 0.12, 12),
+      darkMetalMat
+    );
+    neckBracket.position.set(0, 0.05, 0);
+    neckPivot.add(neckBracket);
+
+    // Группа самого плафона (смотрит вдоль локальной оси +Z)
+    const headGroup = new THREE.Group();
+    headGroup.position.set(0, 0.11, 0);
+    neckPivot.add(headGroup);
+
+    // Задний цилиндр патрона плафона + чёрная ручка выключателя
+    const capGeo = new THREE.CylinderGeometry(0.145, 0.145, 0.24, 28);
+    capGeo.rotateX(Math.PI / 2);
+    const capMesh = new THREE.Mesh(capGeo, enamelMat);
+    capMesh.position.set(0, 0, -0.08);
+    capMesh.castShadow = true;
+    headGroup.add(capMesh);
+
+    const switchKnob = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.026, 0.07, 14).rotateX(Math.PI / 2),
+      cordMat
+    );
+    switchKnob.position.set(0, 0, -0.22);
+    headGroup.add(switchKnob);
+
+    // Конический колокол плафона (LatheGeometry вдоль +Z)
+    const shadeProfile = [
+      new THREE.Vector2(0.145, 0.02),
+      new THREE.Vector2(0.155, 0.08),
+      new THREE.Vector2(0.22,  0.18),
+      new THREE.Vector2(0.32,  0.32),
+      new THREE.Vector2(0.42,  0.46),
+      new THREE.Vector2(0.445, 0.49),
+      new THREE.Vector2(0.435, 0.50)
+    ];
+    const shadeGeo = new THREE.LatheGeometry(shadeProfile, 40);
+    shadeGeo.rotateX(Math.PI / 2); // Направляем раскрыв плафона вдоль +Z
+
+    const outerShade = new THREE.Mesh(shadeGeo, enamelMat);
+    outerShade.castShadow = true;
+    headGroup.add(outerShade);
+
+    const innerShade = new THREE.Mesh(shadeGeo.clone(), innerShadeMat);
+    innerShade.scale.set(0.985, 0.985, 0.985);
+    headGroup.add(innerShade);
+
+    // Светящаяся лампочка накаливания внутри плафона
+    const bulbMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.135, 24, 24),
+      bulbMat
+    );
+    bulbMesh.position.set(0, 0, 0.17);
+    headGroup.add(bulbMesh);
+
+    // Реальный источник света SpotLight из плафона Luxo Jr.
+    const luxoSpot = new THREE.SpotLight(0xffe9b5, 2.2);
+    luxoSpot.position.set(0, 0, 0.16);
+    luxoSpot.angle = Math.PI / 3.4;
+    luxoSpot.penumbra = 0.65;
+    luxoSpot.decay = 1.3;
+    luxoSpot.distance = 18;
+    luxoSpot.castShadow = true;
+    luxoSpot.shadow.mapSize.width = 1024;
+    luxoSpot.shadow.mapSize.height = 1024;
+    headGroup.add(luxoSpot);
+
+    const luxoSpotTarget = new THREE.Object3D();
+    luxoSpotTarget.position.set(0, 0, 4.0);
+    headGroup.add(luxoSpotTarget);
+    luxoSpot.target = luxoSpotTarget;
+
+    // Объёмный конус света в воздухе
+    const beamGeo = new THREE.ConeGeometry(1.45, 3.6, 32, 1, true);
+    beamGeo.translate(0, -1.8, 0);
+    beamGeo.rotateX(-Math.PI / 2);
+    const beamMat = new THREE.MeshBasicMaterial({
+      map: createBeamTexture(),
+      transparent: true,
+      opacity: 0.42,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+    beamMesh.position.set(0, 0, 0.18);
+    headGroup.add(beamMesh);
+
+    // Блик (Lens Flare) при взгляде в камеру
+    const flareMat = new THREE.SpriteMaterial({
+      map: createFlareTexture(),
+      color: 0xfff5cc,
+      transparent: true,
+      opacity: 0.0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false
+    });
+    const flareSprite = new THREE.Sprite(flareMat);
+    flareSprite.position.set(0, 0, 0.25);
+    flareSprite.scale.set(2.4, 2.4, 1);
+    headGroup.add(flareSprite);
+
+    // =========================================================================
+    // 5. СИСТЕМА АНИМАЦИИ, ХОРЕОГРАФИЯ И ТАЙМЛАЙН (0.0s — 13.8s)
+    // =========================================================================
+    const TOTAL_DURATION = 13.8;
+
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
+    }
+
+    function lerp(a, b, u) {
+      return a + (b - a) * u;
+    }
+
+    function smoothstep(u) {
+      const t = clamp01(u);
+      return t * t * (3 - 2 * t);
+    }
+
+    function evalTrack(keyframes, t) {
+      if (t <= keyframes[0].t) return keyframes[0].v;
+      if (t >= keyframes[keyframes.length - 1].t) return keyframes[keyframes.length - 1].v;
+      for (let i = 0; i < keyframes.length - 1; i++) {
+        const k0 = keyframes[i];
+        const k1 = keyframes[i + 1];
+        if (t >= k0.t && t <= k1.t) {
+          const u = (t - k0.t) / (k1.t - k0.t);
+          return lerp(k0.v, k1.v, k1.linear ? u : smoothstep(u));
+        }
+      }
+      return keyframes[keyframes.length - 1].v;
+    }
+
+    // Ключевые кадры сжатия буквы "I"
+    const I_SCALE_TRACK = [
+      { t: 0.00, v: 1.00 },
+      { t: 5.45, v: 1.00 },
+      // Удар 1
+      { t: 5.58, v: 0.66 },
+      { t: 5.68, v: 0.72 },
+      { t: 6.16, v: 0.72 },
+      // Удар 2
+      { t: 6.28, v: 0.38 },
+      { t: 6.38, v: 0.43 },
+      { t: 6.84, v: 0.43 },
+      // Удар 3
+      { t: 6.96, v: 0.14 },
+      { t: 7.06, v: 0.18 },
+      { t: 7.48, v: 0.18 },
+      // Удар 4 (полное сплющивание)
+      { t: 7.62, v: 0.025 },
+      { t: 8.10, v: 0.008 },
+      { t: 14.0, v: 0.008 }
+    ];
+
+    // Баллистическая траектория базы лампы (x, y, z + параболические прыжки)
+    function getBasePosition(t, iScaleY) {
+      const iTop = LETTER_I_HEIGHT * iScaleY;
+
+      // Сегменты прыжков: [t0, t1, x0, z0, x1, z1, y0, y1, arcHeight]
+      const jumps = [
+        // Прыжок 1 справа
+        { t0: 1.30, t1: 1.76, x0: 8.8,  z0: 0.55, x1: 5.5,   z1: 0.42, y0: 0, y1: 0, arc: 0.85 },
+        // Прыжок 2
+        { t0: 1.92, t1: 2.38, x0: 5.5,  z0: 0.42, x1: 2.2,   z1: 0.28, y0: 0, y1: 0, arc: 0.85 },
+        // Прыжок 3 (остановка перед буквой "I")
+        { t0: 2.54, t1: 3.02, x0: 2.2,  z0: 0.28, x1: -0.82, z1: 0.16, y0: 0, y1: 0, arc: 0.82 },
+        // Большой высокий прыжок на вершину буквы "I"
+        { t0: 4.68, t1: 5.45, x0: -0.82, z0: 0.16, x1: -2.20, z1: 0.0, y0: 0, y1: LETTER_I_HEIGHT, arc: 1.18 },
+        // Отскок 1 на букве "I"
+        { t0: 5.68, t1: 6.16, x0: -2.20, z0: 0.0,  x1: -2.20, z1: 0.0, y0: LETTER_I_HEIGHT * 0.72, y1: LETTER_I_HEIGHT * 0.72, arc: 0.92 },
+        // Отскок 2 на букве "I"
+        { t0: 6.38, t1: 6.84, x0: -2.20, z0: 0.0,  x1: -2.20, z1: 0.0, y0: LETTER_I_HEIGHT * 0.43, y1: LETTER_I_HEIGHT * 0.43, arc: 0.82 },
+        // Отскок 3 на букве "I"
+        { t0: 7.06, t1: 7.48, x0: -2.20, z0: 0.0,  x1: -2.20, z1: 0.0, y0: LETTER_I_HEIGHT * 0.18, y1: LETTER_I_HEIGHT * 0.18, arc: 0.68 }
+      ];
+
+      for (const j of jumps) {
+        if (t >= j.t0 && t <= j.t1) {
+          const u = (t - j.t0) / (j.t1 - j.t0);
+          return {
+            x: lerp(j.x0, j.x1, u),
+            z: lerp(j.z0, j.z1, u),
+            y: lerp(j.y0, j.y1, u) + 4 * u * (1 - u) * j.arc
+          };
+        }
+      }
+
+      if (t < 1.30) return { x: 8.8, y: 0, z: 0.55 };
+      if (t < 1.92) return { x: 5.5, y: 0, z: 0.42 };
+      if (t < 2.54) return { x: 2.2, y: 0, z: 0.28 };
+      if (t < 4.68) return { x: -0.82, y: 0, z: 0.16 };
+      return { x: -2.20, y: iTop, z: 0.0 };
+    }
+
+    // Ключевые кадры сгиба коленей лампы (armAngle: >0.9 присед, ~0.2 растяжение в прыжке)
+    const ARM_ANGLE_TRACK = [
+      { t: 0.00, v: 0.60 },
+      // Прыжок 1
+      { t: 1.18, v: 0.60 }, { t: 1.30, v: 0.96 }, { t: 1.50, v: 0.22 }, { t: 1.76, v: 0.72 }, { t: 1.84, v: 0.98 },
+      // Прыжок 2
+      { t: 1.92, v: 0.92 }, { t: 2.12, v: 0.22 }, { t: 2.38, v: 0.72 }, { t: 2.46, v: 0.98 },
+      // Прыжок 3
+      { t: 2.54, v: 0.92 }, { t: 2.74, v: 0.22 }, { t: 3.02, v: 0.75 }, { t: 3.14, v: 1.00 }, { t: 3.38, v: 0.54 },
+      // Осмотр буквы "I" и глубокий присед перед прыжком на неё
+      { t: 3.70, v: 0.48 }, { t: 4.15, v: 0.44 }, { t: 4.45, v: 1.06 }, { t: 4.68, v: 1.08 },
+      // Полет на вершину "I"
+      { t: 4.95, v: 0.18 }, { t: 5.30, v: 0.32 }, { t: 5.45, v: 0.68 },
+      // Сплющивание 1
+      { t: 5.58, v: 1.04 }, { t: 5.68, v: 0.24 }, { t: 5.92, v: 0.20 }, { t: 6.16, v: 0.65 },
+      // Сплющивание 2
+      { t: 6.28, v: 1.05 }, { t: 6.38, v: 0.24 }, { t: 6.60, v: 0.20 }, { t: 6.84, v: 0.68 },
+      // Сплющивание 3
+      { t: 6.96, v: 1.06 }, { t: 7.06, v: 0.25 }, { t: 7.26, v: 0.22 }, { t: 7.48, v: 0.72 },
+      // Финальное вкручивание в лепёшку
+      { t: 7.62, v: 1.10 }, { t: 8.10, v: 1.06 },
+      // Выпрямление и осмотр
+      { t: 8.65, v: 0.50 }, { t: 9.85, v: 0.52 }, { t: 10.75, v: 0.56 }, { t: 14.0, v: 0.56 }
+    ];
+
+    // Наклон корпуса вперед/назад при прыжках
+    const ARM_LEAN_TRACK = [
+      { t: 0.00, v: 0.0 },
+      { t: 1.30, v: 0.16 }, { t: 1.55, v: 0.24 }, { t: 1.76, v: -0.10 }, { t: 1.92, v: 0.16 },
+      { t: 2.15, v: 0.24 }, { t: 2.38, v: -0.10 }, { t: 2.54, v: 0.16 }, { t: 2.78, v: 0.22 },
+      { t: 3.02, v: -0.14 }, { t: 3.35, v: 0.0 },
+      { t: 4.25, v: -0.08 }, { t: 4.68, v: 0.22 }, { t: 5.05, v: 0.28 }, { t: 5.45, v: 0.0 },
+      { t: 14.0, v: 0.0 }
+    ];
+
+    // Наклон самой круглой базы в полёте
+    const BASE_PITCH_TRACK = [
+      { t: 0.00, v: 0.0 },
+      { t: 1.30, v: 0.0 }, { t: 1.48, v: -0.32 }, { t: 1.66, v: 0.25 }, { t: 1.76, v: 0.0 },
+      { t: 1.92, v: 0.0 }, { t: 2.10, v: -0.32 }, { t: 2.28, v: 0.25 }, { t: 2.38, v: 0.0 },
+      { t: 2.54, v: 0.0 }, { t: 2.72, v: -0.30 }, { t: 2.92, v: 0.22 }, { t: 3.02, v: 0.0 },
+      { t: 4.68, v: 0.0 }, { t: 4.95, v: -0.42 }, { t: 5.32, v: 0.32 }, { t: 5.45, v: 0.0 },
+      { t: 14.0, v: 0.0 }
+    ];
+
+    // Поворот базы вокруг оси Y
+    const BODY_YAW_TRACK = [
+      { t: 0.00, v: -Math.PI / 2 },
+      { t: 4.30, v: -Math.PI / 2 },
+      // Виляние базой перед прыжком
+      { t: 4.42, v: -Math.PI / 2 + 0.16 },
+      { t: 4.54, v: -Math.PI / 2 - 0.16 },
+      { t: 4.66, v: -Math.PI / 2 },
+      { t: 7.62, v: -Math.PI / 2 },
+      // Вкручивание базы на сплющенной букве "I"
+      { t: 7.74, v: -Math.PI / 2 + 0.32 },
+      { t: 7.86, v: -Math.PI / 2 - 0.32 },
+      { t: 7.98, v: -Math.PI / 2 + 0.24 },
+      { t: 8.12, v: -Math.PI / 2 },
+      { t: 9.85, v: -Math.PI / 2 },
+      // Разворот корпуса к зрителю в финале
+      { t: 10.65, v: -0.32 },
+      { t: 14.0, v: -0.32 }
+    ];
+
+    // Поворот головы (neckYaw) относительно корпуса
+    const NECK_YAW_TRACK = [
+      { t: 0.00, v: 0.0 },
+      { t: 7.62, v: 0.0 },
+      // Компенсация при вкручивании, чтобы голова смотрела в пол
+      { t: 7.74, v: -0.25 },
+      { t: 7.86, v: 0.25 },
+      { t: 7.98, v: -0.18 },
+      { t: 8.12, v: 0.0 },
+      // Оглядывание по сторонам ("Куда пропала буква I?")
+      { t: 8.65, v: -0.22 },
+      { t: 9.20, v: 0.95 },
+      { t: 9.80, v: 0.85 },
+      // Точный поворот плафона прямо в объектив камеры (-0.32 + 0.58 = +0.26 рад -> точно на камеру!)
+      { t: 10.65, v: 0.58 },
+      { t: 14.0, v: 0.58 }
+    ];
+
+    // Наклон головы вверх/вниз (отрицательный = вверх, положительный = вниз)
+    const HEAD_PITCH_TRACK = [
+      { t: 0.00, v: 0.12 },
+      { t: 3.05, v: 0.24 },
+      { t: 3.40, v: 0.08 },
+      // Любопытный взгляд вверх на вершину буквы "I"
+      { t: 3.85, v: -0.46 },
+      { t: 4.55, v: -0.38 },
+      // Прыжок и взгляд вниз на букву "I" под собой
+      { t: 5.10, v: 0.42 },
+      { t: 5.45, v: 0.58 },
+      { t: 8.15, v: 0.62 },
+      // Оглядывание
+      { t: 8.75, v: 0.22 },
+      { t: 9.50, v: 0.18 },
+      // Взгляд прямо в объектив камеры
+      { t: 10.65, v: 0.04 },
+      { t: 14.0, v: 0.04 }
+    ];
+
+    // Боковой наклон головы (милый наклон головы Luxo Jr.)
+    const NECK_ROLL_TRACK = [
+      { t: 0.00, v: 0.0 },
+      { t: 3.60, v: 0.0 },
+      { t: 3.95, v: -0.18 },
+      { t: 4.55, v: 0.0 },
+      { t: 8.65, v: -0.12 },
+      { t: 9.35, v: 0.10 },
+      { t: 9.95, v: 0.0 },
+      { t: 10.75, v: 0.16 },
+      { t: 14.0, v: 0.16 }
+    ];
+
+    // Таблица звуковых событий, синхронизированных с кадрами анимации
+    const SOUND_EVENTS = [
+      { t: 1.30, fn: () => sound.playSpringJump(0.95, 1.0) },
+      { t: 1.75, fn: () => sound.playFloorThud(0.85) },
+      { t: 1.92, fn: () => sound.playSpringJump(0.95, 1.04) },
+      { t: 2.37, fn: () => sound.playFloorThud(0.85) },
+      { t: 2.54, fn: () => sound.playSpringJump(1.0, 0.98) },
+      { t: 3.01, fn: () => sound.playFloorThud(0.95) },
+      { t: 3.72, fn: () => sound.playSpringCreak(0.65, 1.15, 0.22) },
+      { t: 4.38, fn: () => sound.playSpringCreak(0.7, 0.92, 0.20) },
+      { t: 4.68, fn: () => sound.playSpringJump(1.25, 1.18) },
+      { t: 5.45, fn: () => sound.playSquishBounce(1) },
+      { t: 6.16, fn: () => sound.playSquishBounce(2) },
+      { t: 6.84, fn: () => sound.playSquishBounce(3) },
+      { t: 7.48, fn: () => sound.playFinalFlatten() },
+      { t: 8.65, fn: () => sound.playSpringCreak(0.55, 0.95, 0.24) },
+      { t: 9.18, fn: () => sound.playSpringCreak(0.55, 1.08, 0.24) },
+      { t: 9.95, fn: () => sound.playSpringCreak(0.75, 0.86, 0.42) },
+      { t: 10.45, fn: () => sound.startBulbHum() }
+    ];
+
+    // Обновление сцены на момент времени t
+    const fadeOverlay = document.getElementById('fade-overlay');
+
+    function applySceneAtTime(t) {
+      // 1. Затемнение в начале и в конце (Fade In / Fade Out)
+      let fade = 0;
+      if (t < 1.1) {
+        fade = 1.0 - smoothstep(t / 1.1);
+      } else if (t > 12.6) {
+        fade = smoothstep((t - 12.6) / 1.15);
+      }
+      fadeOverlay.style.opacity = fade.toFixed(3);
+
+      // 2. Деформация буквы "I" с сохранением объёма
+      const iScaleY = evalTrack(I_SCALE_TRACK, t);
+      const iBulge = 1.0 + (1.0 - iScaleY) * 0.45;
+      letters.I.scale.set(iBulge, iScaleY, iBulge);
+      letters.I.visible = iScaleY > 0.01;
+
+      // 3. Позиция и углы лампы Luxo Jr.
+      const pos = getBasePosition(t, iScaleY);
+      lampRoot.position.set(pos.x, pos.y, pos.z);
+      lampRoot.rotation.y = evalTrack(BODY_YAW_TRACK, t);
+
+      baseTiltGroup.rotation.x = evalTrack(BASE_PITCH_TRACK, t);
+
+      const armAngle = evalTrack(ARM_ANGLE_TRACK, t);
+      const armLean = evalTrack(ARM_LEAN_TRACK, t);
+
+      const lowerRot = -armAngle + armLean;
+      const upperRot = armAngle + armLean;
+
+      lowerArmPivot.rotation.x = lowerRot;
+      elbowPivot.rotation.x = upperRot - lowerRot;
+      neckLeveler.rotation.x = -upperRot - baseTiltGroup.rotation.x;
+
+      neckPivot.rotation.y = evalTrack(NECK_YAW_TRACK, t);
+      neckPivot.rotation.x = evalTrack(HEAD_PITCH_TRACK, t);
+      neckPivot.rotation.z = evalTrack(NECK_ROLL_TRACK, t);
+
+      // 4. Эффект свечения лампочки в камеру и приглушение студийного света в финале
+      const cameraGlow = smoothstep((t - 10.25) / 0.65);
+      flareMat.opacity = cameraGlow * 0.92;
+      luxoSpot.intensity = 2.1 + cameraGlow * 1.6;
+      keyLight.intensity = 1.35 - cameraGlow * 0.32;
+      hemiLight.intensity = 0.65 - cameraGlow * 0.16;
+    }
+
+    // =========================================================================
+    // 6. ЦИКЛ РЕНДЕРИНГА, УПРАВЛЕНИЕ И СВОБОДНАЯ 3D-КАМЕРА
+    // =========================================================================
+    let currentTime = 0;
+    let isPlaying = true;
+    let lastTimestamp = performance.now();
+
+    // Режим 3D-обзора мышью
+    let orbitMode = false;
+    let isDragging = false;
+    let prevMouse = { x: 0, y: 0 };
+    let spherical = { theta: 0, phi: 1.42, radius: 8.2 };
+
+    const scrubber = document.getElementById('scrubber');
+    const timeLabel = document.getElementById('time-label');
+    const btnReplay = document.getElementById('btn-replay');
+    const btnPause = document.getElementById('btn-pause');
+    const btnSound = document.getElementById('btn-sound');
+    const btnCam = document.getElementById('btn-cam');
+    const startPrompt = document.getElementById('start-prompt');
+
+    function updateSoundButtonUI() {
+      if (sound.enabled) {
+        btnSound.textContent = '🔊 Звук вкл';
+        btnSound.classList.add('active');
+        startPrompt.classList.add('hidden');
+      } else {
+        btnSound.textContent = '🔇 Звук выкл';
+        btnSound.classList.remove('active');
+      }
+    }
+
+    function restartIntro(withSound = false) {
+      if (withSound) sound.init();
+      sound.stopBulbHum();
+      currentTime = 0;
+      isPlaying = true;
+      btnPause.textContent = '⏸ Пауза';
+      applySceneAtTime(0);
+    }
+
+    startPrompt.addEventListener('click', () => restartIntro(true));
+    btnReplay.addEventListener('click', () => restartIntro(sound.enabled));
+
+    btnPause.addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      btnPause.textContent = isPlaying ? '⏸ Пауза' : '▶ Пуск';
+      if (!isPlaying) sound.stopBulbHum();
+    });
+
+    btnSound.addEventListener('click', () => sound.toggle());
+
+    scrubber.addEventListener('input', (e) => {
+      currentTime = parseFloat(e.target.value);
+      sound.stopBulbHum();
+      applySceneAtTime(currentTime);
+      timeLabel.textContent = currentTime.toFixed(1) + 's';
+    });
+
+    btnCam.addEventListener('click', () => {
+      orbitMode = !orbitMode;
+      btnCam.classList.toggle('active', orbitMode);
+      if (!orbitMode) {
+        camera.position.copy(DEFAULT_CAM_POS);
+        camera.lookAt(DEFAULT_CAM_TARGET);
+      }
+    });
+
+    renderer.domElement.addEventListener('mousedown', (e) => {
+      if (!orbitMode) return;
+      isDragging = true;
+      prevMouse = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!orbitMode || !isDragging) return;
+      const dx = (e.clientX - prevMouse.x) * 0.007;
+      const dy = (e.clientY - prevMouse.y) * 0.007;
+      prevMouse = { x: e.clientX, y: e.clientY };
+
+      spherical.theta -= dx;
+      spherical.phi = Math.max(0.25, Math.min(Math.PI / 2 - 0.04, spherical.phi - dy));
+
+      camera.position.x = spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+      camera.position.y = spherical.radius * Math.cos(spherical.phi) + 0.4;
+      camera.position.z = spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+      camera.lookAt(DEFAULT_CAM_TARGET);
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Главный анимационный цикл
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now - lastTimestamp) / 1000, 0.1);
+      lastTimestamp = now;
+
+      if (isPlaying) {
+        const prevT = currentTime;
+        currentTime += dt;
+
+        // Проверка и запуск звуковых триггеров
+        for (const ev of SOUND_EVENTS) {
+          if (prevT < ev.t && currentTime >= ev.t) {
+            ev.fn();
+          }
+        }
+
+        if (currentTime >= TOTAL_DURATION) {
+          currentTime = TOTAL_DURATION;
+          isPlaying = false;
+          btnPause.textContent = '▶ Пуск';
+        }
+
+        scrubber.value = currentTime;
+        timeLabel.textContent = currentTime.toFixed(1) + 's';
+        applySceneAtTime(currentTime);
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    applySceneAtTime(0);
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
